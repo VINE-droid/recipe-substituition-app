@@ -48,7 +48,11 @@ router.get('/:sourceId', async (req, res, next) => {
     // Fetch from Spoonacular and cache
     console.log(`[spoonacular] fetching recipe ${sourceId}`);
     const data = await getRecipe(sourceId);
-    const stored = await prisma.recipe.create({ data });
+    const stored = await prisma.recipe.upsert({
+      where: { sourceId },
+      create: data,
+      update: data,
+    });
     return res.json(stored);
   } catch (err) {
     return next(err);

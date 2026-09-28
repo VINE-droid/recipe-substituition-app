@@ -4,12 +4,13 @@ import { Link } from 'react-router-dom';
  * RecipeCard — grid card for a recipe search result.
  * @param {{ recipe: object }} props
  */
-export default function RecipeCard({ recipe }) {
+export default function RecipeCard({ recipe, diet = '' }) {
   const { sourceId, title, imageUrl, usedIngredientCount, missedIngredientCount } = recipe;
+  const recipePath = diet ? `/recipe/${sourceId}?diet=${encodeURIComponent(diet)}` : `/recipe/${sourceId}`;
 
   return (
     <Link
-      to={`/recipe/${sourceId}`}
+      to={recipePath}
       style={{ textDecoration: 'none' }}
       aria-label={`View recipe: ${title}`}
     >

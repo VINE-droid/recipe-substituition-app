@@ -90,7 +90,7 @@ export default function Home() {
             </h2>
             <div className="recipe-grid" id="recipe-grid">
               {results.map((recipe) => (
-                <RecipeCard key={recipe.sourceId} recipe={recipe} />
+                <RecipeCard key={recipe.sourceId} recipe={recipe} diet={diet} />
               ))}
             </div>
           </section>
