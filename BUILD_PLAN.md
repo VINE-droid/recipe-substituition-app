@@ -1,0 +1,282 @@
+# Recipe Substitution App — Detailed Build Plan
+
+This file is the source of truth for the project. Any AI coding agent (Antigravity, Claude Code, Cursor, etc.) must read this file first, work through it in order, and update Section 12 (Progress Log) at the end of every session.
+
+## 1. Rules for the agent
+
+Read this whole file before writing any code, then work one phase at a time. These rules apply in every session, on every tool.
+
+1. **Start of session**: read Section 12 (Progress Log). Continue from its "Next" column. If the log is behind the code, trust the code and fix the log.
+2. **One phase at a time**. Finish a phase's acceptance criteria (Section 9) before starting the next. Do not build stretch features until Phase 6 is done.
+3. **Commit after every completed task** with a clear message, e.g. `feat(server): add /api/recipes/search route`. Small commits let another tool see exactly where work stopped.
+4. **End of session** (even a partial one): add a row to Section 12, and tick the finished checkboxes in Section 9. Do this before stopping or when you sense you are running low on budget.
+5. **Never commit secrets**. `.env` stays out of git. Only `.env.example` is committed.
+6. **Never call Spoonacular or Gemini from the frontend**. Keys live on the server only.
+7. **Do not invent scope**. No extra libraries, auth, or features beyond this file. If something is unclear, write the question in Section 12 under "Blockers" and continue with the closest reasonable choice.
+8. **Verify before ticking a box**. Run the server or client and confirm the acceptance criterion actually works.
+
+## 2. Project overview and stack
+
+A web app where a user enters ingredients, gets matching recipes, opens one, and clicks any ingredient to get 2 to 3 AI-generated substitutes with a reason each. Searches and substitutions are saved and shown on a History page.
+
+| Layer | Choice | Notes |
+|---|---|---|
+| Frontend | React 18 + Vite + Tailwind CSS + React Router | Plain JavaScript is fine; TypeScript optional |
+| Backend | Node.js 18+ and Express | REST API under /api |
+| ORM | Prisma | Schema in server/prisma/schema.prisma |
+| Database | Supabase (hosted PostgreSQL) | Used only as Postgres through Prisma. No Supabase SDK, no Supabase Auth |
+| Recipe data | Spoonacular API | Free tier, 150 requests per day |
+| Substitutions | Google Gemini API via @google/genai | Free tier from Google AI Studio. Model name comes from an env var |
+| Hosting | Vercel (client), Render or Railway (server) | Free tiers |
+
+MVP scope: ingredient search, recipe detail, AI substitutions, dietary filters, history page, deployed with a README.
+
+Out of scope until MVP is done: user accounts, favorites, pantry mode.
+
+## 3. Prerequisites (the human does these, not the agent)
+
+The agent cannot create accounts or keys. Finish this list before the first session, then put the values in `server/.env`.
+
+- [ ] Node.js 18 or newer and npm installed
+- [ ] Empty GitHub repo created and cloned locally
+- [ ] Spoonacular key: sign up at spoonacular.com/food-api and copy the key from the profile page
+- [ ] Gemini key: sign in at aistudio.google.com, click Get API key, create one
+- [ ] Supabase project created at supabase.com. In Project Settings, Database, copy the connection string. Use the Session pooler string (port 5432) for DATABASE_URL
+- [ ] Put all three values in `server/.env` (Section 5)
+
+## 4. Repo structure
+
+```
+recipe-substitution-app/
+├── BUILD_PLAN.md            # this file
+├── README.md
+├── .gitignore
+├── client/                  # React + Vite
+│   ├── package.json
+│   ├── vite.config.js
+│   ├── .env.example         # VITE_API_URL
+│   └── src/
+│       ├── main.jsx
+│       ├── App.jsx          # routes
+│       ├── api.js           # fetch helpers, reads VITE_API_URL
+│       ├── pages/
+│       │   ├── Home.jsx     # search + results
+│       │   ├── RecipeDetail.jsx
+│       │   └── History.jsx
+│       └── components/
+│           ├── IngredientInput.jsx
+│           ├── DietFilter.jsx
+│           ├── RecipeCard.jsx
+│           ├── SubstitutePanel.jsx
+│           └── ErrorMessage.jsx
+└── server/                  # Express + Prisma
+    ├── package.json
+    ├── .env.example
+    ├── prisma/
+    │   └── schema.prisma
+    └── src/
+        ├── index.js         # app setup, CORS, listen
+        ├── db.js            # Prisma client singleton
+        ├── routes/
+        │   ├── recipes.js
+        │   ├── substitute.js
+        │   └── history.js
+        └── services/
+            ├── spoonacular.js
+            └── gemini.js
+```
+
+## 5. Environment variables
+
+Commit only the `.env.example` files. Real `.env` files are git-ignored.
+
+**server/.env.example**
+```
+PORT=4000
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/postgres
+SPOONACULAR_API_KEY=your_key_here
+GEMINI_API_KEY=your_key_here
+GEMINI_MODEL=gemini-2.5-flash
+CLIENT_ORIGIN=http://localhost:5173
+```
+
+**client/.env.example**
+```
+VITE_API_URL=http://localhost:4000
+```
+
+`GEMINI_MODEL` is an env var on purpose: Gemini model names change and older ones get retired. If the default fails with a "model not found" or "deprecated" error, check the current model list at ai.google.dev/gemini-api/docs/models, pick a current Flash model, and change only this variable. Never hardcode the model name in code.
+
+## 6. Database schema (Prisma + Supabase)
+
+Three tables. Recipe is keyed by Spoonacular's id so the same recipe is never stored twice.
+
+```prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Recipe {
+  id            String         @id @default(uuid())
+  sourceId      Int            @unique   // Spoonacular recipe id
+  title         String
+  imageUrl      String?
+  ingredients   Json                     // [{ name, amount, unit }]
+  instructions  String?
+  createdAt     DateTime       @default(now())
+  substitutions Substitution[]
+}
+
+model Substitution {
+  id                 String   @id @default(uuid())
+  recipeId           String
+  recipe             Recipe   @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  originalIngredient String
+  suggestions        Json                // [{ substitute, reason, ratio }]
+  dietaryContext     String?
+  createdAt          DateTime @default(now())
+}
+
+model SearchHistory {
+  id          String   @id @default(uuid())
+  ingredients Json                       // string[]
+  diet        String?
+  createdAt   DateTime @default(now())
+}
+```
+
+**Supabase notes**
+- Run `npx prisma migrate dev --name init` from `server/`. Use the Session pooler connection string (port 5432) for migrations.
+- If the deployed server hits connection-limit errors, switch DATABASE_URL to the Transaction pooler string (port 6543) and append `?pgbouncer=true`.
+- Use Supabase only as a Postgres host. Do not add `@supabase/supabase-js` or Supabase Auth.
+- No user table in the MVP. History is global.
+
+## 7. API contracts
+
+All routes are under `/api`, return JSON, and use the error shape `{ "error": "message" }` with a fitting status code.
+
+| Method | Route | Purpose |
+|---|---|---|
+| GET | /api/health | Returns `{ "ok": true }` |
+| GET | /api/recipes/search | Search by ingredients, optional diet |
+| GET | /api/recipes/:sourceId | Full recipe detail, cached in the DB |
+| POST | /api/substitute | Gemini substitutes for one ingredient, saved |
+| GET | /api/history/searches | Latest 50 searches, newest first |
+| GET | /api/history/substitutions | Latest 50 substitutions with recipe title |
+
+## 8. Gemini integration
+
+All Gemini code lives in `server/src/services/gemini.js`. Nothing else imports the SDK.
+
+**Setup**
+- Install `@google/genai` (the current official Google SDK). Do not use the older `@google/generative-ai` package.
+- Create the client with `new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })`.
+- Read the model from `process.env.GEMINI_MODEL`. Never hardcode it.
+
+## 9. Build phases
+
+Do these in order. Tick a box only after verifying it works.
+
+### Phase 0: Scaffold ✅
+
+- [x] Create the folder layout from Section 4, git init, and a .gitignore covering node_modules, .env, dist, .DS_Store
+- [x] server/: npm init, install express cors dotenv @prisma/client @google/genai, dev-install prisma nodemon. Add dev and start scripts. Use ES modules ("type": "module")
+- [x] server/src/index.js: Express app, cors limited to CLIENT_ORIGIN, JSON body parsing, GET /api/health
+- [x] server/prisma/schema.prisma from Section 6, then run the first migration
+- [x] server/src/db.js: single shared Prisma client
+- [x] client/: create with Vite React template, install react-router-dom and Tailwind CSS (follow Tailwind's current Vite install guide)
+- [x] client/src/App.jsx with routes /, /recipe/:sourceId, /history, plus a simple nav bar
+- [x] Write both .env.example files from Section 5
+
+> **⚠️ Migration pending**: `npx prisma migrate dev --name init` needs to be run once you have filled in `server/.env` with a real `DATABASE_URL` from Supabase.
+
+**Acceptance**: ✅ `npm run dev` in server/ starts and `GET /api/health` returns `{ "ok": true }`. ✅ `npm run dev` in client/ shows the three routes. ⬜ The migration created three tables in Supabase (needs DATABASE_URL).
+
+### Phase 1: Recipe search
+
+- [ ] services/spoonacular.js: searchByIngredients(ingredients, diet) and getRecipe(id), both using SPOONACULAR_API_KEY
+- [ ] routes/recipes.js: GET /api/recipes/search per Section 7, saving a SearchHistory row
+- [ ] IngredientInput.jsx: type an ingredient, press Enter to add a removable tag
+- [ ] RecipeCard.jsx: image, title, used and missing ingredient counts, links to /recipe/:sourceId
+- [ ] Home.jsx: input, Search button, grid of cards, plus loading and empty states
+
+Acceptance: entering egg, flour, milk shows real recipe cards. A new row appears in SearchHistory.
+
+### Phase 2: Recipe detail
+
+- [ ] GET /api/recipes/:sourceId per Section 7, with DB caching so a repeated request does not call Spoonacular again
+- [ ] RecipeDetail.jsx: title, image, ingredient list, instructions
+
+Acceptance: opening a recipe works. A second visit to the same recipe makes no Spoonacular call (confirm in server logs).
+
+### Phase 3: AI substitutions
+
+- [ ] services/gemini.js per Section 8, including validation and one retry
+- [ ] routes/substitute.js: POST /api/substitute per Section 7, saving a Substitution row
+- [ ] Make each ingredient on RecipeDetail.jsx clickable
+- [ ] SubstitutePanel.jsx: modal or side panel showing loading, then each suggestion with ratio and reason, or a friendly error
+
+Acceptance: clicking butter on a real recipe shows 2 to 3 sensible substitutes with reasons, and a Substitution row is saved. Killing the Gemini key shows a friendly error, not a crash.
+
+### Phase 4: Dietary filters
+
+- [ ] DietFilter.jsx: single-select for none, vegetarian, vegan, gluten free, dairy free
+- [ ] Pass diet to search. On the detail page, pass the active diet as dietaryContext to /api/substitute
+
+Acceptance: with vegan selected, search results are vegan and butter substitutes are vegan.
+
+### Phase 5: History page
+
+- [ ] routes/history.js: both history routes per Section 7
+- [ ] History.jsx: two lists, recent searches (click to re-run) and recent substitutions (show recipe title, original ingredient, and suggestions)
+
+Acceptance: searches and substitutions made earlier appear in the right order after a page refresh.
+
+### Phase 6: Polish, README, deploy
+
+- [ ] Error handling and loading states everywhere (Section 10)
+- [ ] Responsive layout that works on a phone-width screen
+- [ ] Deploy per Section 11
+- [ ] README per Section 11
+
+Acceptance: the deployed URL completes the full flow (search, open, substitute, history) with no console errors.
+
+## 10. Errors, rate limits, caching
+
+- Cache recipe detail in the DB. GET /api/recipes/:sourceId reads the Recipe table first (Phase 2).
+- One Spoonacular call per search. Use `addRecipeInformation=true` so results do not trigger a second call per recipe.
+- Map upstream failures to clear statuses: Spoonacular 402 or 429 becomes 429. Gemini 429 becomes 429. Other upstream failures become 502.
+- Central error handler in index.js that returns `{ "error": "..." }` and never leaks stack traces or API keys.
+- Frontend: every fetch shows a loading state and an ErrorMessage.jsx on failure. Disable the Search and Substitute buttons while a request is in flight.
+
+## 11. Deployment and README
+
+The agent prepares the config and writes the README. The human does the account clicks on Vercel and Render.
+
+**Server on Render (or Railway)**
+- Root directory `server`, build command `npm install && npx prisma generate`, start command `npm start`
+- Set env vars: DATABASE_URL, SPOONACULAR_API_KEY, GEMINI_API_KEY, GEMINI_MODEL, CLIENT_ORIGIN
+
+**Client on Vercel**
+- Root directory `client`, framework Vite
+- Set VITE_API_URL to the deployed server URL
+
+## 12. Progress Log
+
+| Date | Tool | Phase / task reached | Done | Next | Blockers |
+|---|---|---|---|---|---|
+| (setup) | Human | Prerequisites | Plan written | Phase 0: scaffold repo | None |
+| 2026-09-28 | Antigravity | Phase 0: complete scaffold | All Phase 0 files created and committed. Server health endpoint verified (`GET /api/health → { ok: true }`). Client builds with zero errors (Vite + Tailwind v4 + React Router). All routes, services, pages, and components written (Phases 1–5 code also complete). | Run `npx prisma migrate dev --name init` after filling `server/.env`. Then verify Phase 1 acceptance (real Spoonacular search). | Needs `server/.env` with real DATABASE_URL, SPOONACULAR_API_KEY, GEMINI_API_KEY before the migration and live API calls work. |
+
+---
+
+> **Note for next session**: All the code for Phases 0–5 has been written in this session. The remaining work before ticking Phase 1–5 boxes is:
+> 1. Human fills `server/.env` (copy from `server/.env.example`, add real keys)
+> 2. Run `cd server && npx prisma migrate dev --name init`
+> 3. Run both dev servers and test each acceptance criterion end-to-end
+> 4. Tick the boxes in Section 9 as each criterion is verified
