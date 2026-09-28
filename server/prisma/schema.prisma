@@ -1,0 +1,36 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Recipe {
+  id            String         @id @default(uuid())
+  sourceId      Int            @unique   // Spoonacular recipe id
+  title         String
+  imageUrl      String?
+  ingredients   Json                     // [{ name, amount, unit }]
+  instructions  String?
+  createdAt     DateTime       @default(now())
+  substitutions Substitution[]
+}
+
+model Substitution {
+  id                 String   @id @default(uuid())
+  recipeId           String
+  recipe             Recipe   @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  originalIngredient String
+  suggestions        Json                // [{ substitute, reason, ratio }]
+  dietaryContext     String?
+  createdAt          DateTime @default(now())
+}
+
+model SearchHistory {
+  id          String   @id @default(uuid())
+  ingredients Json                       // string[]
+  diet        String?
+  createdAt   DateTime @default(now())
+}
